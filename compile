@@ -1,0 +1,2 @@
+#!/bin/bash
+PATH=$PATH:/usr/local/gcc-arm-none-eabi-5_4-2016q3/bin/ make $1 $2

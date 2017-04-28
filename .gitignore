@@ -3,3 +3,6 @@ cscope.out
 cscope.po.out
 stm32-vserprog/*
 *.bin
+*.o
+*.elf
+*.map

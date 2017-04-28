@@ -355,7 +355,7 @@ static int cdcacm_control_request(usbd_device *usbd_dev, struct usb_setup_data *
 	return 0;
 }
 
-static void cdcacm_data_rx_cb(usbd_device *usbd_dev, uint8_t ep)
+static void cdcacm_data_rx_cb_stashed(usbd_device *usbd_dev, uint8_t ep)
 {
 	(void)ep;
 	(void)usbd_dev;
@@ -378,7 +378,7 @@ static void cdcacm_data_rx_cb(usbd_device *usbd_dev, uint8_t ep)
 	}
 }
 
-static void cdcacm_data_rx_cb_stashed(usbd_device *usbd_dev, uint8_t ep)
+static void cdcacm_data_rx_cb(usbd_device *usbd_dev, uint8_t ep)
 {
 	(void)ep;
 	(void)usbd_dev;
@@ -554,7 +554,7 @@ int main(void)
 		if (!bufEmpty(&uart1RxBuf)){
 			bufRemove(&uart1RxBuf, &data);
   /* Blocking write */
-  while (0 == (i = usbd_ep_write_packet(usbd_dev, 0x82, &data, 1)));
+		while (0 == (i = usbd_ep_write_packet(usbd_dev, 0x82, &data, 1)));
 
 /*		while (!usbd_ep_write_packet(usbd_dev, 0x82, &data, 1));*/
 		}

@@ -35,6 +35,11 @@
 #define BAUDRATE 115200
 
 #define BUFSIZE 256
+#define SWEATIN 128
+#define CHILLIN 64
+
+static	uint8_t warn = 0;
+
 struct uartbuf {
 	uint16_t start, end, high;
 	uint8_t data[BUFSIZE];
@@ -62,17 +67,27 @@ static int bufAdd(struct uartbuf *buf, uint8_t data)
 		buf->end = ((buf->end + 1) % BUFSIZE);
 		current = buf->start <= buf->end ? buf->end -buf->start : BUFSIZE - buf->start + buf->end +1;
 		buf->high = current > buf->high ? current : buf->high;
+		if ( !warn && current > SWEATIN)
+			warn = 1;
 	}
 	return 1;
 }
 
 static int bufRemove(struct uartbuf * buf, uint8_t *data)
 {
+	uint16_t current = 0;
 	if (bufEmpty(buf))
 		return 0;
 	else {
 		*data = buf->data[buf->start];
 		buf->start = ((buf->start+ 1) % BUFSIZE);
+		if (warn){
+			current = buf->start <= buf->end 
+				? buf->end - buf->start 
+				: BUFSIZE - buf->start + buf->end +1;
+			if (current < CHILLIN)
+				warn = 0;
+		}
 	}
 	return 1;
 }
@@ -91,9 +106,9 @@ void usart1_isr(void)
 		/* Indicate that we got data. */
 		gpio_toggle(GPIOC, GPIO13);
 		/* Send UART1 buffer status on UART2 */
-		for (int i = 0; BufCount[i]; i++)
+/*		for (int i = 0; BufCount[i]; i++)
 			bufAdd(&uart2TxBuf, BufCount[i]);
-		sprintf(BufCount, "Receiving Data - transmit: %i receive: %i\n\r", uart1TxBuf.end - uart1TxBuf.start, uart1RxBuf.end - uart1RxBuf.start);
+		sprintf(BufCount, "Receiving Data - transmit: %i receive: %i\n\r", uart1TxBuf.end - uart1TxBuf.start, uart1RxBuf.end - uart1RxBuf.start);*/
 	/*	USART_CR1(USART2) |= USART_CR1_TXEIE;*/
 		
 
@@ -111,9 +126,9 @@ void usart1_isr(void)
 		/* Indicate that we are sending out data. */
 	/*	gpio_toggle(GPIOC, GPIO13);*/
 		/* Send UART1 buffer status on UART2 */
-		for (int i = 0; BufCount[i]; i++)
+	/*	for (int i = 0; BufCount[i]; i++)
 			bufAdd(&uart2TxBuf, BufCount[i]);
-		sprintf(BufCount, "Transmitting data -transmit: %i receive: %i\n\r", uart1TxBuf.end - uart1TxBuf.start, uart1RxBuf.end - uart1RxBuf.start);
+		sprintf(BufCount, "Transmitting data -transmit: %i receive: %i\n\r", uart1TxBuf.end - uart1TxBuf.start, uart1RxBuf.end - uart1RxBuf.start);*/
 		
 		/* Put data into the transmit register. */
 		if (bufRemove(&uart1TxBuf, &data)){
@@ -387,18 +402,22 @@ static void cdcacm_data_rx_cb(usbd_device *usbd_dev, uint8_t ep)
 /*	nvic_disable_irq(NVIC_USART1_IRQ);*/
 	int len;
   /* Blocking read. Assume RX user buffer is empty. TODO: consider setting a timeout */
-  while (0 == (len = usbd_ep_read_packet(usbd_dev, 0x01, buf, 64)));
-/*ret = usbd_ep_read_packet(usbd_dev, EP_IN, usbcdc_rxbuf, USBCDC_PKT_SIZE_DAT)));*/
-/*	nvic_enable_irq(NVIC_USART1_IRQ);*/
-
-	if (len) {
-		for (int i = 0; i < len; i++){
-			bufAdd(&uart1TxBuf, buf[i]);
-		}
-/*		usbd_ep_write_packet(usbd_dev, 0x82, buf, len);*/
-		buf[len] = 0;
-/*		gpio_toggle(GPIOC, GPIO13);*/
+	/* give uart a chance to catch up */
+  	if (!warn){
+		while (0 == (len = usbd_ep_read_packet(usbd_dev, 0x01, buf, 64)));
+		if (len) {
+			for (int i = 0; i < len; i++){
+				while ((USART_SR(USART1) & USART_SR_TXE) == 0){
+				}
+				usart_send(USART1, buf[i]);
+			}
+	/*		usbd_ep_write_packet(usbd_dev, 0x82, buf, len);*/
+			buf[len] = 0;
+	/*		gpio_toggle(GPIOC, GPIO13);*/
+	
+	
 		USART_CR1(USART1) |= USART_CR1_TXEIE;
+		}
 	}
 }
 
@@ -523,7 +542,7 @@ static void gpio_setup(void)
 }
 
 void usb_lp_can_rx0_irq(void) {
-	usbd_poll(usbd_dev);
+		usbd_poll(usbd_dev);
 }
 
 static void cdcacm_reset(void) {

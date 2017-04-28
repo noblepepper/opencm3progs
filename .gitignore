@@ -1,5 +1,5 @@
-stm32-vserprog/
 cscope.in.out
 cscope.out
 cscope.po.out
+stm32-vserprog/*
 *.bin

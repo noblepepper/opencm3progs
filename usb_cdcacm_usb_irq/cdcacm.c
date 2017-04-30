@@ -28,11 +28,12 @@
 #include <libopencm3/cm3/scb.h>
 
 /*
+#define BAUDRATE 460800
 #define BAUDRATE 230400
 #define BAUDRATE 115200
 */
 
-#define BAUDRATE 115200
+#define BAUDRATE 230400
 
 #define BUFSIZE 256
 #define SWEATIN 128

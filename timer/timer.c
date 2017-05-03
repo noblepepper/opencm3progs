@@ -81,21 +81,21 @@ static void tim_setup(void)
 	timer_one_shot_mode(TIM2);
 
 	/* count full range, as we'll update compare value continuously */
-	timer_set_period(TIM2, 10000);
+	timer_set_period(TIM2, 5000);
 
 	/* Counter enable. */
 	timer_enable_counter(TIM2);
 
 	/* Enable Channel 1 compare interrupt to recalculate compare values */
-	timer_enable_irq(TIM2, TIM_DIER_CC1IE);
+	timer_enable_irq(TIM2, TIM_DIER_UIE);
 }
 
 void tim2_isr(void)
 {
-	if (timer_get_flag(TIM2, TIM_SR_CC1IF)) {
+	if (timer_get_flag(TIM2, TIM_SR_UIF)) {
 
 		/* Clear compare interrupt flag. */
-		timer_clear_flag(TIM2, TIM_SR_CC1IF);
+		timer_clear_flag(TIM2, TIM_SR_UIF);
 		/* Toggle LED to indicate compare event. */
 		gpio_toggle(LED1_PORT, LED1_PIN);
 	}

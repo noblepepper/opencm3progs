@@ -6,3 +6,4 @@ stm32-vserprog/*
 *.o
 *.elf
 *.map
+*.d

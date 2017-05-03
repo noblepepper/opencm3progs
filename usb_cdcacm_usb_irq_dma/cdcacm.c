@@ -43,7 +43,8 @@
 #define LED1_PORT GPIOC
 #define LED1_PIN GPIO13
 
-
+static uint16_t count;
+static uint16_t n;
 
 struct uartbuf {
 	uint16_t start, end, high;
@@ -51,7 +52,8 @@ struct uartbuf {
 };
 
 struct uartbuf uart1TxBuf, uart1RxBuf, uart2TxBuf, uart2RxBuf;
-char tx1buf[64], rx1buf[256];
+
+static char tx1buf[64], rx1buf[256];
 
 static int bufFull(struct uartbuf *buf)
 {
@@ -105,7 +107,7 @@ static void tim_setup(void)
 	timer_disable_preload(TIM2);
 	timer_one_shot_mode(TIM2);
 	/* count full range, as we'll update compare value continuously */
-	timer_set_period(TIM2, 5000);
+	timer_set_period(TIM2, 500);
 	/* Counter enable. */
 //	timer_enable_counter(TIM2);
 	/* Enable Channel 1 compare interrupt to recalculate compare values */
@@ -121,7 +123,7 @@ void tim2_isr(void)
 		timer_clear_flag(TIM2, TIM_SR_UIF);
 		dma_disable_channel(DMA1, DMA_CHANNEL5);
 		//timer_disable_counter(TIM2);
-		chars_read = 128 - DMA_CNDTR(DMA1, DMA_CHANNEL5);
+		chars_read = 64 - DMA_CNDTR(DMA1, DMA_CHANNEL5);
 		while (0 == (i = usbd_ep_write_packet(usbd_dev, 0x82, rx1buf, chars_read)));
 		usart_enable_rx_interrupt(USART1);
 		/* Toggle LED to indicate compare event. */
@@ -499,7 +501,11 @@ volatile int received = 0;
 void dma1_channel5_isr(void)
 {	
 	dma_disable_channel(DMA1, DMA_CHANNEL5);
-	//timer_disable_counter(TIM2);
+	timer_disable_counter(TIM2);
+	if ((count + count/n) < 65500){
+		++n;
+		count += timer_get_counter(TIM2);
+	}
 	if ((DMA1_ISR &DMA_ISR_TCIF5) != 0) {
 		DMA1_IFCR |= DMA_IFCR_CTCIF5;
 		received = 1;

@@ -40,6 +40,10 @@
 
 #define BUFSIZE 256
 
+#define LED1_PORT GPIOC
+#define LED1_PIN GPIO13
+
+
 
 struct uartbuf {
 	uint16_t start, end, high;
@@ -86,8 +90,45 @@ static int bufRemove(struct uartbuf * buf, uint8_t *data)
 	return 1;
 }
 
-
 static	usbd_device *usbd_dev;
+
+static void tim_setup(void)
+{
+	/* Enable TIM2 clock. */
+	rcc_periph_clock_enable(RCC_TIM2);
+	/* Enable TIM2 interrupt. */
+	nvic_enable_irq(NVIC_TIM2_IRQ);
+	timer_set_mode(TIM2, TIM_CR1_CKD_CK_INT,
+		TIM_CR1_CMS_EDGE, TIM_CR1_DIR_UP);
+	timer_set_prescaler(TIM2, ((rcc_apb1_frequency * 2) / 1000));
+	/* Disable preload. */
+	timer_disable_preload(TIM2);
+	timer_one_shot_mode(TIM2);
+	/* count full range, as we'll update compare value continuously */
+	timer_set_period(TIM2, 5000);
+	/* Counter enable. */
+//	timer_enable_counter(TIM2);
+	/* Enable Channel 1 compare interrupt to recalculate compare values */
+	timer_enable_irq(TIM2, TIM_DIER_UIE);
+}
+
+void tim2_isr(void)
+{
+	if (timer_get_flag(TIM2, TIM_SR_UIF)) {
+		int i;
+		uint16_t chars_read;
+		/* Clear compare interrupt flag. */
+		timer_clear_flag(TIM2, TIM_SR_UIF);
+		dma_disable_channel(DMA1, DMA_CHANNEL5);
+		//timer_disable_counter(TIM2);
+		chars_read = 128 - DMA_CNDTR(DMA1, DMA_CHANNEL5);
+		while (0 == (i = usbd_ep_write_packet(usbd_dev, 0x82, rx1buf, chars_read)));
+		usart_enable_rx_interrupt(USART1);
+		/* Toggle LED to indicate compare event. */
+		gpio_toggle(LED1_PORT, LED1_PIN);
+	}
+//	timer_enable_counter(TIM2);
+}
 
 /* USB Interrupts */
 
@@ -135,6 +176,7 @@ void usart1_isr(void)
 	if (((USART_CR1(USART1) & USART_CR1_RXNEIE) != 0) &&
 	    ((USART_SR(USART1) & USART_SR_RXNE) != 0)) {
 		usart_disable_rx_interrupt(USART1);
+		timer_enable_counter(TIM2);
 		dma_read(rx1buf, 64);
 	}
 	/* Check if we were called because of TXE. */
@@ -495,7 +537,7 @@ int main(void)
 
 	clock_setup();
 	gpio_setup();
-	//tim_setup();
+	tim_setup();
 	usart_setup();
 	usb_setup();
 	gpio_set(GPIOC, GPIO13);

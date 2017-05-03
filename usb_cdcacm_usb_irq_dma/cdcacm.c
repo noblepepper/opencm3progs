@@ -26,7 +26,9 @@
 #include <libopencm3/stm32/usart.h>
 #include <libopencm3/cm3/nvic.h>
 #include <libopencm3/cm3/scb.h>
+#include <libopencm3/cm3/systick.h>
 #include <libopencm3/stm32/dma.h>
+#include <libopencm3/stm32/timer.h>
 
 /*
 #define BAUDRATE 460800
@@ -34,7 +36,7 @@
 #define BAUDRATE 115200
 */
 
-#define BAUDRATE 230400
+#define BAUDRATE 115200
 
 #define BUFSIZE 256
 
@@ -45,7 +47,7 @@ struct uartbuf {
 };
 
 struct uartbuf uart1TxBuf, uart1RxBuf, uart2TxBuf, uart2RxBuf;
-char buf[64];
+char tx1buf[64], rx1buf[256];
 
 static int bufFull(struct uartbuf *buf)
 {
@@ -57,7 +59,7 @@ static int bufEmpty(struct uartbuf *buf)
 	return (buf->start == buf->end);
 }
 
-static int bufAdd(struct uartbuf *buf, uint8_t data)
+ static int bufAdd(struct uartbuf *buf, uint8_t data)
 {
 	uint16_t current = 0;
 	if (bufFull(buf))
@@ -65,7 +67,9 @@ static int bufAdd(struct uartbuf *buf, uint8_t data)
 	else {
 		buf->data[buf->end] = data;
 		buf->end = ((buf->end + 1) % BUFSIZE);
-		current = buf->start <= buf->end ? buf->end -buf->start : BUFSIZE - buf->start + buf->end +1;
+		current = buf->start <= buf->end ? 
+			buf->end -buf->start : 
+			BUFSIZE - buf->start + buf->end +1;
 		buf->high = current > buf->high ? current : buf->high;
 	}
 	return 1;
@@ -82,65 +86,10 @@ static int bufRemove(struct uartbuf * buf, uint8_t *data)
 	return 1;
 }
 
+
 static	usbd_device *usbd_dev;
 
-static void dma_read(char *data, int size)
-{
-	/*
-	 * Using channel 5 for USART1_RX
-	 */
-	/*dma_set_memory_address(DMA1, DMA_CHANNEL5, (uint32_t)data);
-	dma_set_number_of_data(DMA1, DMA_CHANNEL5, size);
-        usart_enable_rx_dma(USART1);*/
-	dma_channel_reset(DMA1, DMA_CHANNEL5);
-
-	dma_set_peripheral_address(DMA1, DMA_CHANNEL5, (uint32_t)&USART1_DR);
-	dma_set_memory_address(DMA1, DMA_CHANNEL5, (uint32_t)data);
-	dma_set_number_of_data(DMA1, DMA_CHANNEL5, size);
-	dma_set_read_from_peripheral(DMA1, DMA_CHANNEL5);
-	dma_enable_memory_increment_mode(DMA1, DMA_CHANNEL5);
-	dma_set_peripheral_size(DMA1, DMA_CHANNEL5, DMA_CCR_PSIZE_8BIT);
-	dma_set_memory_size(DMA1, DMA_CHANNEL5, DMA_CCR_MSIZE_8BIT);
-	dma_set_priority(DMA1, DMA_CHANNEL5, DMA_CCR_PL_HIGH);
-
-	dma_enable_transfer_complete_interrupt(DMA1, DMA_CHANNEL5);
-
-	dma_enable_channel(DMA1, DMA_CHANNEL5);
-
-        usart_enable_rx_dma(USART1);
-}
-
-int rxOverflow = 0;
-void usart1_isr(void)
-{
-	static uint8_t data;
-	/* Check if we were called because of RXNE. */
-	if (((USART_CR1(USART1) & USART_CR1_RXNEIE) != 0) &&
-	    ((USART_SR(USART1) & USART_SR_RXNE) != 0)) {
-
-		/* Indicate that we got data. */
-		gpio_toggle(GPIOC, GPIO13);
-	/*	dma_read(&uart1RxBuf, 1);*/
-		/* Retrieve the data from the peripheral. */
-		data = usart_recv(USART1) & 0xff;
-		if (!bufAdd(&uart1RxBuf, data))
-			rxOverflow = 1;
-	}
-
-	/* Check if we were called because of TXE. */
-	if (((USART_CR1(USART1) & USART_CR1_TXEIE) != 0) &&
-	    ((USART_SR(USART1) & USART_SR_TXE) != 0)) {
-		/* Put data into the transmit register. */
-		if (bufRemove(&uart1TxBuf, &data)){
-			usart_send(USART1, data);
-		} else {
-		/* Disable the TXE interrupt as we don't need it anymore. */
-		USART_CR1(USART1) &= ~USART_CR1_TXEIE;
-		}
-	}
-}
-
-/* Interrupts */
+/* USB Interrupts */
 
 static void usb_int_relay(void) {
   /* Need to pass a parameter... otherwise just alias it directly. */
@@ -156,6 +105,18 @@ __attribute__ ((alias ("usb_int_relay")));
 void usb_lp_can_rx0_isr(void)
 __attribute__ ((alias ("usb_int_relay")));
 
+static void dma_read(char *data, int size)
+{
+	/*
+	 * Using channel 5 for USART1_RX
+	 */
+	dma_disable_channel(DMA1, DMA_CHANNEL5);
+	dma_set_memory_address(DMA1, DMA_CHANNEL5, (uint32_t)data);
+	dma_set_number_of_data(DMA1, DMA_CHANNEL5, size);
+	dma_enable_transfer_complete_interrupt(DMA1, DMA_CHANNEL5);
+        dma_enable_channel(DMA1, DMA_CHANNEL5);
+}
+
 static void dma_write(char *data, int size)
 {
 	/*
@@ -164,6 +125,29 @@ static void dma_write(char *data, int size)
 	dma_set_memory_address(DMA1, DMA_CHANNEL4, (uint32_t)data);
 	dma_set_number_of_data(DMA1, DMA_CHANNEL4, size);
 	dma_enable_channel(DMA1, DMA_CHANNEL4);
+}
+
+int rxOverflow = 0;
+void usart1_isr(void)
+{
+	static uint8_t data;
+	/* Check if we were called because of RXNE. */
+	if (((USART_CR1(USART1) & USART_CR1_RXNEIE) != 0) &&
+	    ((USART_SR(USART1) & USART_SR_RXNE) != 0)) {
+		usart_disable_rx_interrupt(USART1);
+		dma_read(rx1buf, 64);
+	}
+	/* Check if we were called because of TXE. */
+	if (((USART_CR1(USART1) & USART_CR1_TXEIE) != 0) &&
+	    ((USART_SR(USART1) & USART_SR_TXE) != 0)) {
+		/* Put data into the transmit register. */
+		if (bufRemove(&uart1TxBuf, &data)){
+			usart_send(USART1, data);
+		} else {
+		/* Disable the TXE interrupt as we don't need it anymore. */
+		USART_CR1(USART1) &= ~USART_CR1_TXEIE;
+		}
+	}
 }
 
 static const struct usb_device_descriptor dev = {
@@ -301,9 +285,9 @@ static const struct usb_config_descriptor config = {
 };
 
 static const char *usb_strings[] = {
-	"Black Sphere Technologies",
-	"CDC-ACM Demo",
-	"DEMO",
+	"libopencm3",
+	"USB to UART converter",
+	"stm32f103",
 };
 
 /* Buffer to be used for control requests. */
@@ -353,11 +337,11 @@ static void cdcacm_data_rx_cb(usbd_device *usbd_dev, uint8_t ep)
 
 	int len;
 /* Blocking read. Assume RX user buffer is empty.*/
-	while (0 == (len = usbd_ep_read_packet(usbd_dev, 0x01, buf, 64)));
+	while (0 == (len = usbd_ep_read_packet(usbd_dev, 0x01, tx1buf, 64)));
 /* send data on uart */
 	if (len) {
-		dma_write(buf, len);
-		buf[len] = 0;
+		dma_write(tx1buf, len);
+		tx1buf[len] = 0;
 	USART_CR1(USART1) |= USART_CR1_TXEIE;
 	}
 }
@@ -369,7 +353,6 @@ static void cdcacm_set_config(usbd_device *usbd_dev, uint16_t wValue)
 	(void)wValue;
 	(void)usbd_dev;
 
-/*	usbd_ep_setup(usbd_dev, 0x01, USB_ENDPOINT_ATTR_BULK, 64, NULL);*/
 	usbd_ep_setup(usbd_dev, 0x01, USB_ENDPOINT_ATTR_BULK, 64, cdcacm_data_rx_cb);
 	usbd_ep_setup(usbd_dev, 0x82, USB_ENDPOINT_ATTR_BULK, 64, NULL);
 	usbd_ep_setup(usbd_dev, 0x83, USB_ENDPOINT_ATTR_INTERRUPT, 16, NULL);
@@ -387,7 +370,6 @@ static void cdcacm_set_config(usbd_device *usbd_dev, uint16_t wValue)
 static void clock_setup(void)
 {
 	rcc_clock_setup_in_hse_8mhz_out_72mhz();
-
 	/* Enable clocks for GPIO port A (for GPIO_USART1_TX) and USART1. */
 	rcc_periph_clock_enable(RCC_GPIOA);
 	rcc_periph_clock_enable(RCC_GPIOB);
@@ -398,13 +380,20 @@ static void clock_setup(void)
 	rcc_periph_clock_enable(RCC_USART1);
 	rcc_periph_clock_enable(RCC_USART2);
 	// Setup heartbeat timer (AHB = 72mhz) (freq = 1000Hz)
-
+        systick_set_frequency(1000, 72000000);
+	systick_interrupt_disable();
+        systick_counter_disable();
 	/* Enable DMA1 clock */
 	rcc_periph_clock_enable(RCC_DMA1);
+	/* Enable TIM2 clock. */
+	rcc_periph_clock_enable(RCC_TIM2);
 }
 
 static void usart_setup(void)
 {
+	/* Set USART priorities */
+	nvic_set_priority(NVIC_USART1_IRQ, 1);
+	nvic_enable_irq(NVIC_USART1_IRQ);
 	/* Setup GPIO pin GPIO_USART1_RE_TX on GPIO port A for transmit. */
 	gpio_set_mode(GPIOA, GPIO_MODE_OUTPUT_50_MHZ,
 		      GPIO_CNF_OUTPUT_ALTFN_PUSHPULL, GPIO_USART1_TX);
@@ -418,8 +407,7 @@ static void usart_setup(void)
 	usart_set_parity(USART1, USART_PARITY_NONE);
 	usart_set_flow_control(USART1, USART_FLOWCONTROL_NONE);
 	usart_set_mode(USART1, USART_MODE_TX_RX);
-	/* Enable USART1 Receive interrupt. */
-	USART_CR1(USART1) |= USART_CR1_RXNEIE;
+	usart_enable_rx_interrupt(USART1);
 	/* Finally enable the USART. */
 	usart_enable(USART1);
 
@@ -428,7 +416,6 @@ static void usart_setup(void)
 	nvic_enable_irq(NVIC_DMA1_CHANNEL4_IRQ);
 	nvic_set_priority(NVIC_DMA1_CHANNEL5_IRQ, 0);
 	nvic_enable_irq(NVIC_DMA1_CHANNEL5_IRQ);
-	
 /* Setup dma channel 4 for tx */
 	dma_channel_reset(DMA1, DMA_CHANNEL4);
 	dma_set_peripheral_address(DMA1, DMA_CHANNEL4, (uint32_t)&USART1_DR);
@@ -437,51 +424,45 @@ static void usart_setup(void)
 	dma_enable_memory_increment_mode(DMA1, DMA_CHANNEL4);
 	dma_set_peripheral_size(DMA1, DMA_CHANNEL4, DMA_CCR_PSIZE_8BIT);
 	dma_set_memory_size(DMA1, DMA_CHANNEL4, DMA_CCR_MSIZE_8BIT);
-	dma_set_priority(DMA1, DMA_CHANNEL4, DMA_CCR_PL_VERY_HIGH);
+	dma_set_priority(DMA1, DMA_CHANNEL4, DMA_CCR_PL_HIGH);
 	dma_enable_transfer_complete_interrupt(DMA1, DMA_CHANNEL4);
-        usart_enable_tx_dma(USART1);
+	usart_enable_tx_dma(USART1);
 /* Setup dma channel 5 for rx */
-/*	dma_channel_reset(DMA1, DMA_CHANNEL5);
+	dma_channel_reset(DMA1, DMA_CHANNEL5);
 	dma_set_peripheral_address(DMA1, DMA_CHANNEL5, (uint32_t)&USART1_DR);
-	dma_disable_peripheral_increment_mode(DMA1, DMA_CHANNEL5);
+	dma_disable_peripheral_increment_mode(DMA1, DMA_CHANNEL5); // (BIT 6)
 	dma_set_read_from_peripheral(DMA1, DMA_CHANNEL5);
 	dma_enable_memory_increment_mode(DMA1, DMA_CHANNEL5);
 	dma_set_peripheral_size(DMA1, DMA_CHANNEL5, DMA_CCR_PSIZE_8BIT);
 	dma_set_memory_size(DMA1, DMA_CHANNEL5, DMA_CCR_MSIZE_8BIT);
-	dma_set_priority(DMA1, DMA_CHANNEL5, DMA_CCR_PL_HIGH);
+	dma_set_priority(DMA1, DMA_CHANNEL5, DMA_CCR_PL_VERY_HIGH);
 	dma_enable_transfer_complete_interrupt(DMA1, DMA_CHANNEL5);
-	dma_enable_channel(DMA1, DMA_CHANNEL5);
-*/
+        usart_enable_rx_dma(USART1);
 }
 
 volatile int transfered = 0;
 
 void dma1_channel4_isr(void)
 {
+	dma_disable_channel(DMA1, DMA_CHANNEL4);
 	if ((DMA1_ISR & DMA_ISR_TCIF4) != 0) {
 		DMA1_IFCR |= DMA_IFCR_CTCIF4;
 
 		transfered = 1;
 	}
-	dma_disable_channel(DMA1, DMA_CHANNEL4);
 }
 
 volatile int received = 0;
 
 void dma1_channel5_isr(void)
-{	uint8_t data;
+{	
+	dma_disable_channel(DMA1, DMA_CHANNEL5);
+	//timer_disable_counter(TIM2);
 	if ((DMA1_ISR &DMA_ISR_TCIF5) != 0) {
 		DMA1_IFCR |= DMA_IFCR_CTCIF5;
-
 		received = 1;
+		/* use the next 64 bytes of buffer */
 	}
-	data = DMA1_CNDTR5;
-
-	dma_disable_transfer_complete_interrupt(DMA1, DMA_CHANNEL5);
-
-	usart_disable_rx_dma(USART1);
-
-	dma_disable_channel(DMA1, DMA_CHANNEL5);
 }
 
 static void gpio_setup(void)
@@ -491,7 +472,7 @@ static void gpio_setup(void)
 		      GPIO_CNF_OUTPUT_PUSHPULL, GPIO13);
 }
 
-void usb_lp_can_rx0_irq(void) {
+static void usb_lp_can_rx0_irq(void) {
 		usbd_poll(usbd_dev);
 }
 
@@ -499,32 +480,33 @@ static void cdcacm_reset(void) {
   usb_ready = false;
 }
 
-int main(void)
+static void usb_setup(void)
 {
-	int i;
-	uint8_t data;
-	char test[80] = "abcdefghijklmnopqrstuvwxyz\n";
-
-/*	usbd_device *usbd_dev;*/
-	clock_setup();
-	gpio_setup();
-	usart_setup();
-/*	dma_write(test, 27);*/
 	usbd_dev = usbd_init(&st_usbfs_v1_usb_driver, &dev, &config, usb_strings, 3, 
 				usbd_control_buffer, sizeof(usbd_control_buffer));
 	usbd_register_set_config_callback(usbd_dev, cdcacm_set_config);
   	usbd_register_reset_callback(usbd_dev, cdcacm_reset);
+ 	nvic_enable_irq(NVIC_USB_LP_CAN_RX0_IRQ);
+}
+
+int main(void)
+{
+	int i;
+
+	clock_setup();
+	gpio_setup();
+	//tim_setup();
+	usart_setup();
+	usb_setup();
+	gpio_set(GPIOC, GPIO13);
 	for (i = 0; i < 0x800000; i++)
 		__asm__("nop");
 	gpio_clear(GPIOC, GPIO13);
- 	nvic_enable_irq(NVIC_USB_LP_CAN_RX0_IRQ);
 	while (1){
-		nvic_disable_irq(NVIC_USART1_IRQ);
-		if (!bufEmpty(&uart1RxBuf)){
-			bufRemove(&uart1RxBuf, &data);
-		while (0 == (i = usbd_ep_write_packet(usbd_dev, 0x82, &data, 1)));
-
+		if (received == 1){
+			while (0 == (i = usbd_ep_write_packet(usbd_dev, 0x82, rx1buf, 64)));
+			usart_enable_rx_interrupt(USART1);
+			received = 0;
 		}
-		nvic_enable_irq(NVIC_USART1_IRQ);
 	}
 }

@@ -26,6 +26,10 @@
 #include <libopencm3/stm32/usart.h>
 #include <libopencm3/cm3/nvic.h>
 #include <libopencm3/cm3/scb.h>
+#include <libopencm3/cm3/systick.h>
+
+void NVIC_Configuration(void);
+void usb_lp_can_rx0_irq(void);
 
 /*
 #define BAUDRATE 460800
@@ -33,13 +37,9 @@
 #define BAUDRATE 115200
 */
 
-#define BAUDRATE 230400
+#define BAUDRATE 115200
 
 #define BUFSIZE 256
-#define SWEATIN 128
-#define CHILLIN 64
-
-static	uint8_t warn = 0;
 
 struct uartbuf {
 	uint16_t start, end, high;
@@ -66,29 +66,18 @@ static int bufAdd(struct uartbuf *buf, uint8_t data)
 	else {
 		buf->data[buf->end] = data;
 		buf->end = ((buf->end + 1) % BUFSIZE);
-		current = buf->start <= buf->end ? buf->end -buf->start : BUFSIZE - buf->start + buf->end +1;
 		buf->high = current > buf->high ? current : buf->high;
-		if ( !warn && current > SWEATIN)
-			warn = 1;
 	}
 	return 1;
 }
 
 static int bufRemove(struct uartbuf * buf, uint8_t *data)
 {
-	uint16_t current = 0;
 	if (bufEmpty(buf))
 		return 0;
 	else {
 		*data = buf->data[buf->start];
 		buf->start = ((buf->start+ 1) % BUFSIZE);
-		if (warn){
-			current = buf->start <= buf->end 
-				? buf->end - buf->start 
-				: BUFSIZE - buf->start + buf->end +1;
-			if (current < CHILLIN)
-				warn = 0;
-		}
 	}
 	return 1;
 }
@@ -99,20 +88,12 @@ int rxOverflow = 0;
 void usart1_isr(void)
 {
 	static uint8_t data;
-	char BufCount[79];
 	/* Check if we were called because of RXNE. */
 	if (((USART_CR1(USART1) & USART_CR1_RXNEIE) != 0) &&
 	    ((USART_SR(USART1) & USART_SR_RXNE) != 0)) {
 
 		/* Indicate that we got data. */
 		gpio_toggle(GPIOC, GPIO13);
-		/* Send UART1 buffer status on UART2 */
-/*		for (int i = 0; BufCount[i]; i++)
-			bufAdd(&uart2TxBuf, BufCount[i]);
-		sprintf(BufCount, "Receiving Data - transmit: %i receive: %i\n\r", uart1TxBuf.end - uart1TxBuf.start, uart1RxBuf.end - uart1RxBuf.start);*/
-	/*	USART_CR1(USART2) |= USART_CR1_TXEIE;*/
-		
-
 		/* Retrieve the data from the peripheral. */
 		data = usart_recv(USART1) & 0xff;
 		if (!bufAdd(&uart1RxBuf, data))
@@ -125,12 +106,7 @@ void usart1_isr(void)
 	    ((USART_SR(USART1) & USART_SR_TXE) != 0)) {
 
 		/* Indicate that we are sending out data. */
-	/*	gpio_toggle(GPIOC, GPIO13);*/
-		/* Send UART1 buffer status on UART2 */
-	/*	for (int i = 0; BufCount[i]; i++)
-			bufAdd(&uart2TxBuf, BufCount[i]);
-		sprintf(BufCount, "Transmitting data -transmit: %i receive: %i\n\r", uart1TxBuf.end - uart1TxBuf.start, uart1RxBuf.end - uart1RxBuf.start);*/
-		
+		gpio_toggle(GPIOC, GPIO13);
 		/* Put data into the transmit register. */
 		if (bufRemove(&uart1TxBuf, &data)){
 			usart_send(USART1, data);
@@ -142,39 +118,6 @@ void usart1_isr(void)
 //	USART_CR1(USART2) |= USART_CR1_TXEIE;
 }
 
-void usart2_isr(void)
-{
-	static uint8_t data;
-
-	/* Check if we were called because of RXNE. */
-	if (((USART_CR1(USART2) & USART_CR1_RXNEIE) != 0) &&
-	    ((USART_SR(USART2) & USART_SR_RXNE) != 0)) {
-
-		/* Indicate that we got data. */
-	/*	gpio_toggle(GPIOC, GPIO13);*/
-
-		/* Retrieve the data from the peripheral. */
-		data = usart_recv(USART2) & 0xff;
-	/*	usbd_ep_write_packet(usbd_dev, 0x82, &data, 1);*/
-	}
-
-	/* Check if we were called because of TXE. */
-	if (((USART_CR1(USART2) & USART_CR1_TXEIE) != 0) &&
-	    ((USART_SR(USART2) & USART_SR_TXE) != 0)) {
-
-		/* Indicate that we are sending out data. */
-	/*	gpio_toggle(GPIOC, GPIO13);*/
-
-		/* Put data into the transmit register. */
-		if (bufRemove(&uart2TxBuf, &data)){
-			usart_send(USART2, data);
-		} else {
-		/* Disable the TXE interrupt as we don't need it anymore. */
-		usart_disable_tx_interrupt(USART2);
-/*		USART_CR1(USART2) &= ~USART_CR1_TXEIE;*/
-		}
-	}
-}
 /* Interrupts */
 
 static void usb_int_relay(void) {
@@ -326,9 +269,9 @@ static const struct usb_config_descriptor config = {
 };
 
 static const char *usb_strings[] = {
-	"Black Sphere Technologies",
-	"CDC-ACM Demo",
-	"DEMO",
+	"libopencm3",
+	"USB to UART converter",
+	"stm32f103",
 };
 
 /* Buffer to be used for control requests. */
@@ -371,29 +314,6 @@ static int cdcacm_control_request(usbd_device *usbd_dev, struct usb_setup_data *
 	return 0;
 }
 
-static void cdcacm_data_rx_cb_stashed(usbd_device *usbd_dev, uint8_t ep)
-{
-	(void)ep;
-	(void)usbd_dev;
-
-	char buf[64];
-	nvic_disable_irq(NVIC_USART1_IRQ);
-	int len = usbd_ep_read_packet(usbd_dev, 0x01, buf, 64);
-	nvic_enable_irq(NVIC_USART1_IRQ);
-
-	if (len) {
-		for (int i = 0; i < len; i++){
-			bufAdd(&uart1TxBuf, buf[i]);
-		}
-
-
-/*		usbd_ep_write_packet(usbd_dev, 0x82, buf, len);*/
-		buf[len] = 0;
-		gpio_toggle(GPIOC, GPIO13);
-		USART_CR1(USART1) |= USART_CR1_TXEIE;
-	}
-}
-
 static void cdcacm_data_rx_cb(usbd_device *usbd_dev, uint8_t ep)
 {
 	(void)ep;
@@ -404,21 +324,17 @@ static void cdcacm_data_rx_cb(usbd_device *usbd_dev, uint8_t ep)
 	int len;
   /* Blocking read. Assume RX user buffer is empty. TODO: consider setting a timeout */
 	/* give uart a chance to catch up */
-  	if (!warn){
-		while (0 == (len = usbd_ep_read_packet(usbd_dev, 0x01, buf, 64)));
-		if (len) {
-			for (int i = 0; i < len; i++){
-				while ((USART_SR(USART1) & USART_SR_TXE) == 0){
-				}
-				usart_send(USART1, buf[i]);
+	while (0 == (len = usbd_ep_read_packet(usbd_dev, 0x01, buf, 64)));
+	if (len) {
+		for (int i = 0; i < len; i++){
+			while ((USART_SR(USART1) & USART_SR_TXE) == 0){
 			}
-	/*		usbd_ep_write_packet(usbd_dev, 0x82, buf, len);*/
-			buf[len] = 0;
-	/*		gpio_toggle(GPIOC, GPIO13);*/
-	
-	
-		USART_CR1(USART1) |= USART_CR1_TXEIE;
+			usart_send(USART1, buf[i]);
 		}
+/*		usbd_ep_write_packet(usbd_dev, 0x82, buf, len);*/
+		buf[len] = 0;
+/*		gpio_toggle(GPIOC, GPIO13);*/
+	USART_CR1(USART1) |= USART_CR1_TXEIE;
 	}
 }
 
@@ -447,7 +363,6 @@ static void cdcacm_set_config(usbd_device *usbd_dev, uint16_t wValue)
 static void clock_setup(void)
 {
 	rcc_clock_setup_in_hse_8mhz_out_72mhz();
-
 	/* Enable clocks for GPIO port A (for GPIO_USART1_TX) and USART1. */
 	rcc_periph_clock_enable(RCC_GPIOA);
 	rcc_periph_clock_enable(RCC_GPIOB);
@@ -459,23 +374,17 @@ static void clock_setup(void)
 	rcc_periph_clock_enable(RCC_USART2);
 	// Setup heartbeat timer (AHB = 72mhz) (freq = 1000Hz)
         systick_set_frequency(1000, 72000000);
-
 	// Set priority of systic
-	// NOTE: I do not know how this priority pertains to all the others (It was copied out of BlackMagic code))
 	/*SCB_SHPR(11) &= ~(15 << 4);
 	SCB_SHPR(11) |= IRQ_PRI_SYSTICK;*/
-	
 	systick_interrupt_disable();
         systick_counter_disable();
 }
 
 void NVIC_Configuration(void) {
-	/* Configure UART1 IRQ */
+	/* Set priorities for  UART IRQs */
 	nvic_set_priority(NVIC_USART1_IRQ, 1);
-
-	/* Configure UART2 IRQ */
 	nvic_set_priority(NVIC_USART2_IRQ, 2);
-
 }
 
 static void usart_setup(void)
@@ -511,30 +420,6 @@ static void usart_setup(void)
 	usart_enable(USART1);
 }
 
-static void usart2_setup(void)
-{
-	/* Enable the USART2 interrupt. */
-	nvic_set_priority(NVIC_USART2_IRQ, 2);
-	nvic_enable_irq(NVIC_USART2_IRQ);
-	/* Setup GPIO pin GPIO_USART2_RE_TX on GPIO port A for transmit. */
-	gpio_set_mode(GPIOA, GPIO_MODE_OUTPUT_50_MHZ,
-		      GPIO_CNF_OUTPUT_ALTFN_PUSHPULL, GPIO_USART2_TX);
-	/* Setup GPIO pin GPIO_USART2_RE_RX on GPIO port A for receive. */
-	gpio_set_mode(GPIOA, GPIO_MODE_INPUT,
-		      GPIO_CNF_INPUT_FLOAT, GPIO_USART2_RX);
-	/* Setup UART parameters. */
-	usart_set_baudrate(USART2, 115200/*230400*/);
-	usart_set_databits(USART2, 8);
-	usart_set_stopbits(USART2, USART_STOPBITS_1);
-	usart_set_parity(USART2, USART_PARITY_NONE);
-	usart_set_flow_control(USART2, USART_FLOWCONTROL_NONE);
-	usart_set_mode(USART2, USART_MODE_TX_RX);
-	/* Enable USART2 Receive interrupt. */
-	USART_CR1(USART2) |= USART_CR1_RXNEIE;
-	/* Finally enable the USART. */
-	usart_enable(USART2);
-}
-
 static void gpio_setup(void)
 {
 	gpio_set(GPIOC, GPIO13);
@@ -549,34 +434,33 @@ void usb_lp_can_rx0_irq(void) {
 static void cdcacm_reset(void) {
   usb_ready = false;
 }
+static void usb_setup(void)
+{
+	usbd_dev = usbd_init(&st_usbfs_v1_usb_driver, &dev, &config, usb_strings, 3, 
+				usbd_control_buffer, sizeof(usbd_control_buffer));
+	usbd_register_set_config_callback(usbd_dev, cdcacm_set_config);
+  	usbd_register_reset_callback(usbd_dev, cdcacm_reset);
+ 	nvic_enable_irq(NVIC_USB_LP_CAN_RX0_IRQ);
+}
 
 int main(void)
 {
 	int i;
 	uint8_t data;
 
-/*	usbd_device *usbd_dev;*/
 	clock_setup();
 	gpio_setup();
 	usart_setup();
-	usbd_dev = usbd_init(&st_usbfs_v1_usb_driver, &dev, &config, usb_strings, 3, 
-				usbd_control_buffer, sizeof(usbd_control_buffer));
-	usbd_register_set_config_callback(usbd_dev, cdcacm_set_config);
-  	usbd_register_reset_callback(usbd_dev, cdcacm_reset);
-	/*nvic_enable_irq(NVIC_USB_LP_CAN_RX0_IRQ);*/
+	usb_setup();
 	for (i = 0; i < 0x800000; i++)
 		__asm__("nop");
 	gpio_clear(GPIOC, GPIO13);
- 	nvic_enable_irq(NVIC_USB_LP_CAN_RX0_IRQ);
 	while (1){
-	/*	usbd_poll(usbd_dev);*/
 		nvic_disable_irq(NVIC_USART1_IRQ);
 		if (!bufEmpty(&uart1RxBuf)){
 			bufRemove(&uart1RxBuf, &data);
   /* Blocking write */
 		while (0 == (i = usbd_ep_write_packet(usbd_dev, 0x82, &data, 1)));
-
-/*		while (!usbd_ep_write_packet(usbd_dev, 0x82, &data, 1));*/
 		}
 		nvic_enable_irq(NVIC_USART1_IRQ);
 	}

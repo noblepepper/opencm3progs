@@ -46,6 +46,8 @@
 static uint16_t count;
 static uint16_t n;
 
+static uint8_t sending = 0, receiving =0;
+
 struct uartbuf {
 	uint16_t start, end, high;
 	uint8_t data[BUFSIZE];
@@ -124,8 +126,11 @@ void tim2_isr(void)
 		dma_disable_channel(DMA1, DMA_CHANNEL5);
 		//timer_disable_counter(TIM2);
 		chars_read = 64 - DMA_CNDTR(DMA1, DMA_CHANNEL5);
+		while ( sending ); /* wait unit tx is done */
+		receiving = 1;
 		while (0 == (i = usbd_ep_write_packet(usbd_dev, 0x82, rx1buf, chars_read)));
 		usart_enable_rx_interrupt(USART1);
+		receiving = 0;
 		/* Toggle LED to indicate compare event. */
 		gpio_toggle(LED1_PORT, LED1_PIN);
 	}
@@ -381,6 +386,8 @@ static void cdcacm_data_rx_cb(usbd_device *usbd_dev, uint8_t ep)
 
 	int len;
 /* Blocking read. Assume RX user buffer is empty.*/
+	while (receiving); /* wait if rx is working */
+	sending = 1;
 	while (0 == (len = usbd_ep_read_packet(usbd_dev, 0x01, tx1buf, 64)));
 /* send data on uart */
 	if (len) {
@@ -388,6 +395,7 @@ static void cdcacm_data_rx_cb(usbd_device *usbd_dev, uint8_t ep)
 		tx1buf[len] = 0;
 	USART_CR1(USART1) |= USART_CR1_TXEIE;
 	}
+	sending = 0;
 }
 
 volatile bool usb_ready = false;
@@ -499,16 +507,21 @@ void dma1_channel4_isr(void)
 volatile int received = 0;
 
 void dma1_channel5_isr(void)
-{	
+{
+	int i;
 	dma_disable_channel(DMA1, DMA_CHANNEL5);
 	timer_disable_counter(TIM2);
-	if ((count + count/n) < 65500){
+	if (count < 65000){
 		++n;
 		count += timer_get_counter(TIM2);
 	}
 	if ((DMA1_ISR &DMA_ISR_TCIF5) != 0) {
 		DMA1_IFCR |= DMA_IFCR_CTCIF5;
-		received = 1;
+		while (sending); /* wait until tx is done */
+		receiving = 1;	
+		while (0 == (i = usbd_ep_write_packet(usbd_dev, 0x82, rx1buf, 64)));
+		usart_enable_rx_interrupt(USART1);
+		receiving = 0;
 		/* use the next 64 bytes of buffer */
 	}
 }
@@ -537,10 +550,9 @@ static void usb_setup(void)
  	nvic_enable_irq(NVIC_USB_LP_CAN_RX0_IRQ);
 }
 
-int main(void)
+void setup(void)
 {
 	int i;
-
 	clock_setup();
 	gpio_setup();
 	tim_setup();
@@ -550,11 +562,11 @@ int main(void)
 	for (i = 0; i < 0x800000; i++)
 		__asm__("nop");
 	gpio_clear(GPIOC, GPIO13);
+}
+
+int main(void)
+{
+	setup();
 	while (1){
-		if (received == 1){
-			while (0 == (i = usbd_ep_write_packet(usbd_dev, 0x82, rx1buf, 64)));
-			usart_enable_rx_interrupt(USART1);
-			received = 0;
-		}
 	}
 }
